@@ -107,6 +107,13 @@ pub(crate) struct WindowsWindowInner {
     pub(crate) parent_hwnd: Option<HWND>,
 }
 
+fn cursor_is_over_window(hwnd: HWND) -> bool {
+    unsafe {
+        let mut point: POINT = std::mem::zeroed();
+        GetCursorPos(&mut point).is_ok() && WindowFromPoint(point) == hwnd
+    }
+}
+
 impl WindowsWindowState {
     fn new(
         hwnd: HWND,
@@ -146,7 +153,21 @@ impl WindowsWindowState {
         let pending_surrogate = None;
         let last_reported_modifiers = None;
         let last_reported_capslock = None;
-        let hovered = false;
+        // A window can be created directly under a stationary cursor, which never
+        // fires `WM_MOUSEMOVE`. Detect that case and arm tracking now, since
+        // `start_tracking_mouse` only does so while `hovered` is false.
+        let hovered = cursor_is_over_window(hwnd);
+        if hovered {
+            unsafe {
+                TrackMouseEvent(&mut TRACKMOUSEEVENT {
+                    cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE | TME_NONCLIENT,
+                    hwndTrack: hwnd,
+                    dwHoverTime: HOVER_DEFAULT,
+                })
+                .log_err();
+            }
+        }
         let click_state = ClickState::new();
         let nc_button_pressed = None;
         let fullscreen = None;
@@ -192,6 +213,26 @@ impl WindowsWindowState {
     #[inline]
     pub(crate) fn is_fullscreen(&self) -> bool {
         self.fullscreen.get().is_some()
+    }
+
+    pub(crate) fn mouse_position(&self) -> Point<Pixels> {
+        let point = unsafe {
+            let mut point: POINT = std::mem::zeroed();
+            GetCursorPos(&mut point)
+                .context("unable to get cursor position")
+                .log_err();
+            ScreenToClient(self.hwnd, &mut point).ok().log_err();
+            point
+        };
+        logical_point(point.x as f32, point.y as f32, self.scale_factor.get())
+    }
+
+    /// Whether this window is the topmost window under the cursor right now.
+    /// Unlike the `hovered` flag, which only updates on `WM_MOUSEMOVE`/`WM_MOUSELEAVE`,
+    /// this stays accurate when another window is raised on top of this one
+    /// without the cursor itself moving.
+    pub(crate) fn is_cursor_over_window(&self) -> bool {
+        cursor_is_over_window(self.hwnd)
     }
 
     pub(crate) fn is_maximized(&self) -> bool {
@@ -668,16 +709,7 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn mouse_position(&self) -> Point<Pixels> {
-        let scale_factor = self.scale_factor();
-        let point = unsafe {
-            let mut point: POINT = std::mem::zeroed();
-            GetCursorPos(&mut point)
-                .context("unable to get cursor position")
-                .log_err();
-            ScreenToClient(self.0.hwnd, &mut point).ok().log_err();
-            point
-        };
-        logical_point(point.x as f32, point.y as f32, scale_factor)
+        self.state.mouse_position()
     }
 
     fn modifiers(&self) -> Modifiers {
@@ -860,7 +892,7 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn is_hovered(&self) -> bool {
-        self.state.hovered.get()
+        self.state.hovered.get() && self.state.is_cursor_over_window()
     }
 
     fn background_appearance(&self) -> WindowBackgroundAppearance {

@@ -391,6 +391,18 @@ impl WindowsWindowInner {
                 .set(Some(callback));
         }
 
+        // Forward this as `MouseExited` too, not just the flags above -- otherwise
+        // `Interactivity`'s hover listener (#60275) never runs on Windows (#43998).
+        if let Some(mut func) = self.state.callbacks.input.take() {
+            let input = PlatformInput::MouseExited(MouseExitEvent {
+                position: self.state.mouse_position(),
+                pressed_button: None,
+                modifiers: current_modifiers(),
+            });
+            func(input);
+            self.state.callbacks.input.set(Some(func));
+        }
+
         Some(0)
     }
 

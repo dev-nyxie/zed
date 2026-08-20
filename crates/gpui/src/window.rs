@@ -2526,6 +2526,17 @@ impl Window {
         }
     }
 
+    /// Whether the cursor may have left the window without `mouse_position` being updated to
+    /// match (`dispatch_event`'s `MouseExited` arm doesn't, unlike other pointer events). Queries
+    /// the platform live rather than `self.hovered` so this also catches the case where another
+    /// window was raised on top of this one without the cursor moving. Only accurate on
+    /// Windows/Linux/BSD; mac's `is_window_hovered()` answers a different question (window-active,
+    /// not cursor-in-window).
+    fn cursor_may_be_outside_window(&self) -> bool {
+        cfg!(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))
+            && !self.platform_window.is_hovered()
+    }
+
     /// Toggle zoom on the window.
     pub fn zoom_window(&self) {
         self.platform_window.zoom();
@@ -3149,7 +3160,11 @@ impl Window {
             tooltip_element = self.prepaint_tooltip(cx);
         }
 
-        self.mouse_hit_test = self.next_frame.hit_test(self.mouse_position);
+        self.mouse_hit_test = if self.cursor_may_be_outside_window() {
+            HitTest::default()
+        } else {
+            self.next_frame.hit_test(self.mouse_position)
+        };
 
         // Now actually paint the elements.
         self.invalidator.set_phase(DrawPhase::Paint);
@@ -5179,7 +5194,11 @@ impl Window {
     }
 
     fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
-        let hit_test = self.rendered_frame.hit_test(self.mouse_position());
+        let hit_test = if self.cursor_may_be_outside_window() {
+            HitTest::default()
+        } else {
+            self.rendered_frame.hit_test(self.mouse_position())
+        };
         if hit_test != self.mouse_hit_test {
             self.mouse_hit_test = hit_test;
             self.reset_cursor_style(cx);
